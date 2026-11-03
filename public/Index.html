@@ -1,0 +1,304 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#101827">
+<title>Plex URL Shortener</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#0b1220;color:#e8eef8;font-family:Arial,sans-serif}
+.container{max-width:1050px;margin:auto;padding:25px 16px}
+header{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:28px}
+.logo{font-size:24px;font-weight:bold;color:#7dd3fc}
+.muted{color:#94a3b8}
+.card{background:#131f32;border:1px solid #263750;border-radius:14px;padding:20px;margin-bottom:18px}
+h1,h2{margin-top:0}
+input{width:100%;padding:13px;border-radius:8px;border:1px solid #34465e;background:#0b1423;color:white;margin:7px 0 14px;font-size:15px}
+button{border:0;border-radius:8px;padding:12px 17px;background:#38bdf8;color:#062033;font-weight:bold;cursor:pointer}
+button.secondary{background:#263750;color:#e8eef8}
+button.danger{background:#ef4444;color:white}
+button:disabled{opacity:.5}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.row>*{flex:1}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.stat{background:#0b1423;padding:17px;border-radius:10px}
+.stat strong{font-size:26px;display:block;margin-top:8px}
+.link{border-top:1px solid #263750;padding:16px 0;overflow-wrap:anywhere}
+.link:first-child{border-top:0}
+.link a{color:#7dd3fc}
+.actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}
+.actions button{padding:8px 11px;font-size:13px}
+.hidden{display:none}
+.error{color:#fca5a5;margin-top:10px}
+.success{color:#86efac;margin-top:10px}
+@media(max-width:600px){.stats{grid-template-columns:1fr}header{align-items:flex-start;flex-direction:column}}
+</style>
+</head>
+<body>
+<div class="container">
+<header>
+  <div>
+    <div class="logo">PLEX URL</div>
+    <div class="muted">Simple link management</div>
+  </div>
+  <button id="logout" class="secondary hidden" onclick="logout()">Logout</button>
+</header>
+
+<section id="auth" class="card">
+  <h2 id="authTitle">Welcome to Plex</h2>
+  <p class="muted" id="authInfo">Checking setup...</p>
+  <form id="authForm">
+    <label id="passwordLabel">Password</label>
+    <input id="password" type="password" minlength="12" required placeholder="At least 12 characters">
+    <button id="authButton" type="submit">Continue</button>
+  </form>
+  <div id="authMessage"></div>
+</section>
+
+<main id="dashboard" class="hidden">
+  <section class="stats">
+    <div class="stat"><span class="muted">Total links</span><strong id="totalLinks">0</strong></div>
+    <div class="stat"><span class="muted">Active links</span><strong id="activeLinks">0</strong></div>
+    <div class="stat"><span class="muted">Total clicks</span><strong id="totalClicks">0</strong></div>
+  </section>
+
+  <section class="card" style="margin-top:18px">
+    <h2>Create new short link</h2>
+    <form id="createForm">
+      <label>Destination URL</label>
+      <input id="destination" type="url" required placeholder="https://notion.site/your-page">
+      <label>Custom slug</label>
+      <input id="slug" required minlength="3" maxlength="50" placeholder="my-notion-page">
+      <label>Title (optional)</label>
+      <input id="title" maxlength="100" placeholder="My Notion Page">
+      <button type="submit">Create short link</button>
+    </form>
+    <div id="createMessage"></div>
+  </section>
+
+  <section class="card">
+    <h2>Your links</h2>
+    <div id="linksList" class="muted">Loading...</div>
+  </section>
+</main>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let setupMode = false;
+let links = [];
+
+async function api(path, options={}) {
+  const response = await fetch(path, {
+    ...options,
+    credentials: "same-origin",
+    headers: {
+      "content-type":"application/json",
+      ...(options.headers || {})
+    }
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "Request failed");
+  return data;
+}
+
+function message(id, text, good=false) {
+  $(id).textContent = text;
+  $(id).className = good ? "success" : "error";
+}
+
+async function init() {
+  try {
+    const result = await api("/api/setup-status");
+    setupMode = !result.setup;
+    $("authTitle").textContent = setupMode ? "Create Admin Password" : "Admin Login";
+    $("authInfo").textContent = setupMode
+      ? "Set your password to secure your dashboard."
+      : "Sign in to manage your short links.";
+    $("passwordLabel").textContent = setupMode ? "Create password" : "Password";
+    $("authButton").textContent = setupMode ? "Create account" : "Login";
+    $("password").placeholder = setupMode
+      ? "At least 12 characters"
+      : "Enter your password";
+  } catch(e) {
+    $("authInfo").textContent = "Unable to connect to server.";
+    message("authMessage", e.message);
+  }
+}
+
+$("authForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const password = $("password").value;
+  try {
+    await api(setupMode ? "/api/setup" : "/api/login", {
+      method:"POST",
+      body:JSON.stringify({password})
+    });
+    $("password").value = "";
+    await showDashboard();
+  } catch(e) {
+    message("authMessage", e.message);
+  }
+});
+
+async function showDashboard() {
+  $("auth").classList.add("hidden");
+  $("dashboard").classList.remove("hidden");
+  $("logout").classList.remove("hidden");
+  await loadLinks();
+}
+
+async function loadLinks() {
+  try {
+    const data = await api("/api/links");
+    links = data.links || [];
+    $("totalLinks").textContent = data.totals.total || 0;
+    $("activeLinks").textContent = data.totals.active || 0;
+    $("totalClicks").textContent = data.totals.clicks || 0;
+    renderLinks();
+  } catch(e) {
+    message("createMessage", e.message);
+  }
+}
+
+function renderLinks() {
+  const list = $("linksList");
+  list.innerHTML = "";
+
+  if (!links.length) {
+    list.textContent = "No links created yet.";
+    return;
+  }
+
+  links.forEach(link => {
+    const item = document.createElement("div");
+    item.className = "link";
+
+    const shortUrl = location.origin + "/" + encodeURIComponent(link.slug);
+
+    const title = document.createElement("strong");
+    title.textContent = link.title || link.slug;
+
+    const short = document.createElement("p");
+    const anchor = document.createElement("a");
+    anchor.href = shortUrl;
+    anchor.target = "_blank";
+    anchor.rel = "noopener";
+    anchor.textContent = shortUrl;
+    short.append(anchor);
+
+    const destination = document.createElement("p");
+    destination.className = "muted";
+    destination.textContent = link.destination;
+
+    const info = document.createElement("p");
+    info.className = "muted";
+    info.textContent = "Clicks: " + link.clicks + " | " + (link.active ? "Active" : "Inactive");
+
+    const actions = document.createElement("div");
+    actions.className = "actions";
+
+    const copy = document.createElement("button");
+    copy.textContent = "Copy";
+    copy.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(shortUrl);
+        copy.textContent = "Copied!";
+      } catch {
+        prompt("Copy this URL:", shortUrl);
+      }
+    };
+
+    const edit = document.createElement("button");
+    edit.className = "secondary";
+    edit.textContent = "Edit";
+    edit.onclick = () => editLink(link);
+
+    const toggle = document.createElement("button");
+    toggle.className = "secondary";
+    toggle.textContent = link.active ? "Deactivate" : "Activate";
+    toggle.onclick = () => toggleLink(link);
+
+    const remove = document.createElement("button");
+    remove.className = "danger";
+    remove.textContent = "Delete";
+    remove.onclick = () => deleteLink(link);
+
+    actions.append(copy, edit, toggle, remove);
+    item.append(title, short, destination, info, actions);
+    list.append(item);
+  });
+}
+
+$("createForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  try {
+    await api("/api/links", {
+      method:"POST",
+      body:JSON.stringify({
+        destination:$("destination").value,
+        slug:$("slug").value,
+        title:$("title").value
+      })
+    });
+    $("createForm").reset();
+    message("createMessage", "Short link created successfully!", true);
+    await loadLinks();
+  } catch(e) {
+    message("createMessage", e.message);
+  }
+});
+
+async function editLink(link) {
+  const destination = prompt("New destination URL:", link.destination);
+  if (destination === null) return;
+  const title = prompt("New title:", link.title || "");
+  if (title === null) return;
+
+  try {
+    await api("/api/links/" + link.id, {
+      method:"PUT",
+      body:JSON.stringify({destination, title})
+    });
+    await loadLinks();
+  } catch(e) {
+    alert(e.message);
+  }
+}
+
+async function toggleLink(link) {
+  try {
+    await api("/api/links/" + link.id, {
+      method:"PATCH",
+      body:JSON.stringify({active:!link.active})
+    });
+    await loadLinks();
+  } catch(e) {
+    alert(e.message);
+  }
+}
+
+async function deleteLink(link) {
+  if (!confirm("Delete this short link permanently?")) return;
+  try {
+    await api("/api/links/" + link.id, {method:"DELETE"});
+    await loadLinks();
+  } catch(e) {
+    alert(e.message);
+  }
+}
+
+async function logout() {
+  try {
+    await api("/api/logout", {method:"POST"});
+  } finally {
+    location.reload();
+  }
+}
+
+init();
+</script>
+</body>
+</html>
