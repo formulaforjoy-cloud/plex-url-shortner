@@ -1,0 +1,12 @@
+name = "plex-url-shortner"
+main = "index.js"
+compatibility_date = "2026-11-03"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "plex-url-db"
+database_id = "5129882d-ef66-4cb3-aaee-609ca30178d0"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
